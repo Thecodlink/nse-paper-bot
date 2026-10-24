@@ -233,32 +233,40 @@ checks → BUY; any two fail → SKIP.
 (`'30 10 * * 5'`), restores journal/state from `bot-state`, runs
 `weekly_review.py`, commits the review back to `main`.
 
-### State commit-back bug found and fixed (Oct 24)
+### State commit-back bug found and fixed (Oct 24, two attempts)
 
 Symptom: two `workflow_dispatch` runs showed "completed / success",
 all steps green including "Commit state back", yet `bot-state` stayed
 at its initial commit with heartbeat 11:00.
-Root cause (two parts):
-1. Git identity was only configured in the commit-back step, AFTER the
-   main run. `state.py`'s in-run commit therefore failed, and —
-2. the old `state.py` checked only the PUSH returncode. A push of the
-   unchanged HEAD returns 0, so it reported success while nothing moved.
-   The workflow's `git checkout -B bot-state` then discarded the modified
-   `state.json`, so the backup commit found "nothing to commit".
-Fix (pushed in `e50687c`):
-- Git identity is now configured immediately after checkout, BEFORE
-  the run, in all three jobs.
-- `state.py` now checks the commit returncode and that HEAD actually
-  changed; a failed commit is logged as an error and the file is left
-  modified for the backup step.
-- The workflow backup step no longer does `checkout -B bot-state` or
-  `pull --rebase`; it adds `state.json` + `journal.db`, and only
-  commits+pushes (`HEAD:bot-state --force`) if there is actually a
-  staged change. If `state.py` already pushed, it prints "nothing to
-  commit" and does nothing — it can no longer revert the branch.
+Root cause, first attempt (`e50687c`): git identity was only
+configured in the commit-back step, AFTER the main run, so `state.py`'s
+in-run commit failed; and the old `state.py` checked only the PUSH
+returncode — a push of the unchanged HEAD returns 0, so it reported
+success while nothing moved. The workflow's `git checkout -B bot-state`
+then discarded the modified `state.json`.
+Root cause, second attempt (also failed, run `40070791456`): fixing
+the commit check was not enough. The in-run push was rejected
+(non-fast-forward: bot-state's history is an orphan, divergent from
+main), and `state.py`'s `pull --rebase origin bot-state` then rebased
+main onto that divergent history and reset `state.json` to the OLD
+version — job logs show `state push failed (attempt 0): ... [rejected]
+HEAD -> bot-state (non-fast-forward)`, then commit failures, then the
+backup step printing "nothing to commit".
+Final fix (pushed in `7cb0fa78`, VERIFIED):
+- `state.py` does NO git at all in branch mode — it only writes the
+  file. bot-state is a snapshot branch, not a history branch, so
+  rebasing/merging its history is exactly the wrong tool.
+- The workflow commit-back step is the SOLE committer: it adds
+  `state.json` and `journal.db` on SEPARATE `git add` lines (a combined
+  add fails entirely if `journal.db` does not exist yet), commits
+  only if there is a staged change, and force-pushes `HEAD:bot-state`.
+- Git identity is configured immediately after checkout, BEFORE the run.
 - `journal.db` is now also committed back, so the Friday review can
   actually read the week's journal (previously only `state.json` was
   committed, so the review would always have seen an empty journal).
+Verification: post-fix `once` run `40071116325` completed success and
+`bot-state` heartbeat moved from `2026-10-24T11:00:30` to
+`2026-10-24T12:11:30` IST — checked via the API, not from run status.
 
 ## 7. Verification evidence (Phase 6 — as far as a Saturday allows)
 
