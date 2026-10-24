@@ -25,31 +25,16 @@ def save(state):
     tmp=config.STATE_FILE+".tmp"
     with open(tmp,"w") as f: json.dump(state,f,indent=2,default=str)
     os.replace(tmp, config.STATE_FILE)
-    if _branch_mode():
-        # FIX (Oct 24, 2026): the old code checked only the PUSH returncode.
-        # If `git commit` failed (e.g. no user.name/email configured yet in
-        # Actions), the push of the unchanged HEAD still returned 0, so
-        # save() reported success while bot-state never moved. Now a failed
-        # commit is an error and the file is left modified for the workflow
-        # commit-back step to commit; a push is only counted when a commit
-        # was actually created in this attempt.
-        for i in range(3):
-            try:
-                head_before=_git("rev-parse","HEAD").stdout.strip()
-                _git("add","state.json","journal.db")
-                rc=_git("commit","-m","bot state update")
-                if rc.returncode!=0:
-                    log.error("state commit failed (attempt %d): %s %s",
-                              i, rc.stdout, rc.stderr)
-                    continue
-                head_after=_git("rev-parse","HEAD").stdout.strip()
-                if head_after==head_before:
-                    log.warning("state commit created no new commit (attempt %d)", i)
-                    continue
-                r2=_git("push","origin",f"HEAD:{config.STATE_BRANCH}")
-                if r2.returncode==0: return
-                log.warning("state push failed (attempt %d): %s", i, r2.stderr)
-                _git("pull","--rebase","origin",config.STATE_BRANCH)
-            except Exception as e: log.warning("state push attempt %d: %s", i, e)
+    # FIX (Oct 24, 2026, second attempt): save() does NO git at all in
+    # branch mode. Two earlier designs both lost the heartbeat:
+    #  (1) commit-then-push checked only the push returncode, and
+    #  (2) pull --rebase origin bot-state rebased main onto the divergent
+    #      orphan bot-state history and reset state.json to the OLD
+    #      version, so the workflow backup step then saw "nothing to
+    #      commit". bot-state is a snapshot branch, not a history branch:
+    #      the workflow commit-back step is the SOLE committer — it adds
+    #      state.json (+ journal.db if present), commits if staged, and
+    #      force-pushes HEAD:bot-state. One writer, no rebase, no history
+    #      merge. load() above still pulls the file from bot-state.
 def heartbeat(state):
     n=config.now_ist(); state["heartbeat"]=n.isoformat(); state["heartbeat_date"]=n.date().isoformat(); return state
