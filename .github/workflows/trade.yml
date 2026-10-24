@@ -22,6 +22,9 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
+      - name: Configure git identity (must be BEFORE the run, so state.py can commit)
+        run: |
+          git config user.name "nse-paper-bot"; git config user.email "bot@localhost"
       - name: Restore state from bot-state branch
         run: |
           git fetch origin bot-state || echo "no bot-state branch yet"
@@ -56,20 +59,21 @@ jobs:
           PHONE: ${{ secrets.PHONE }}
           STATE_BRANCH_MODE: '1'
         run: python main.py --mode ${{ inputs.mode || 'jobA' }}
-      - name: Commit state back
+      - name: Commit state back (backup only; state.py already commits in branch mode)
         if: always()
         run: |
           git config user.name "nse-paper-bot"; git config user.email "bot@localhost"
-          git checkout -B bot-state
-          git add state.json || true
-          git commit -m "state update" || echo "nothing to commit"
-          for i in 1 2 3; do git pull --rebase origin bot-state || true; git push origin bot-state && break; sleep 5; done
+          git add state.json journal.db || true
+          if git diff --cached --quiet; then echo "nothing to commit (state.py already pushed)"; else git commit -m "state update" && git push origin HEAD:bot-state --force; fi
   jobB:
     if: ${{ github.event.schedule == '25 9 * * 1-5' || inputs.mode == 'jobB' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Configure git identity (must be BEFORE the run, so state.py can commit)
+        run: |
+          git config user.name "nse-paper-bot"; git config user.email "bot@localhost"
       - name: Restore state from bot-state branch
         run: |
           git fetch origin bot-state || echo "no bot-state branch yet"
@@ -102,20 +106,21 @@ jobs:
           PHONE: ${{ secrets.PHONE }}
           STATE_BRANCH_MODE: '1'
         run: python main.py --mode jobB
-      - name: Commit state back
+      - name: Commit state back (backup only; state.py already commits in branch mode)
         if: always()
         run: |
           git config user.name "nse-paper-bot"; git config user.email "bot@localhost"
-          git checkout -B bot-state
-          git add state.json || true
-          git commit -m "state update eod" || echo "nothing to commit"
-          for i in 1 2 3; do git pull --rebase origin bot-state || true; git push origin bot-state && break; sleep 5; done
+          git add state.json journal.db || true
+          if git diff --cached --quiet; then echo "nothing to commit (state.py already pushed)"; else git commit -m "state update eod" && git push origin HEAD:bot-state --force; fi
   watchdog:
     if: ${{ github.event.schedule == '0 4 * * 1-5' || inputs.mode == 'watchdog' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Configure git identity (must be BEFORE the run, so state.py can commit)
+        run: |
+          git config user.name "nse-paper-bot"; git config user.email "bot@localhost"
       - name: Restore state from bot-state branch
         run: |
           git fetch origin bot-state || echo "no bot-state branch yet"
