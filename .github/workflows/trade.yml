@@ -1,0 +1,138 @@
+name: NSE Paper Bot
+on:
+  schedule:
+    - cron: '20 3 * * 1-5'
+    - cron: '25 9 * * 1-5'
+    - cron: '0 4 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: false
+        default: 'once'
+        type: choice
+        options: [jobA, jobB, watchdog, once, test-notify]
+permissions:
+  contents: write
+  actions: write
+jobs:
+  jobA:
+    if: ${{ github.event.schedule == '20 3 * * 1-5' || inputs.mode == 'jobA' || inputs.mode == 'once' || inputs.mode == 'test-notify' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore state from bot-state branch
+        run: |
+          git fetch origin bot-state || echo "no bot-state branch yet"
+          git checkout origin/bot-state -- state.json || echo "no state.json yet"
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11', cache: pip }
+      - name: Cache HF models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-kronos-finbert-v1
+      - name: Install deps + Kronos
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          git clone --depth 1 https://github.com/shiyu-coder/Kronos || true
+      - name: Download HF models (safetensors only)
+        # FinBERT's repo also ships TF/Flax/PyTorch-bin duplicates (~1.3 GB
+        # extra). Fetch safetensors + tokenizer/config only.
+        env:
+          HF_HUB_DISABLE_SYMLINKS_WARNING: '1'
+        run: |
+          python -c "from huggingface_hub import snapshot_download; [snapshot_download(r, ignore_patterns=['*.h5','*.msgpack','pytorch_model.bin']) for r in ['NeoQuasar/Kronos-small','NeoQuasar/Kronos-Tokenizer-base','NeoQuasar/Kronos-mini','ProsusAI/finbert']]"
+      - name: Run Job A
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_NIM_KEY: ${{ secrets.NVIDIA_NIM_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CALLMEBOT_KEY: ${{ secrets.CALLMEBOT_KEY }}
+          PHONE: ${{ secrets.PHONE }}
+          STATE_BRANCH_MODE: '1'
+        run: python main.py --mode ${{ inputs.mode || 'jobA' }}
+      - name: Commit state back
+        if: always()
+        run: |
+          git config user.name "nse-paper-bot"; git config user.email "bot@localhost"
+          git checkout -B bot-state
+          git add state.json || true
+          git commit -m "state update" || echo "nothing to commit"
+          for i in 1 2 3; do git pull --rebase origin bot-state || true; git push origin bot-state && break; sleep 5; done
+  jobB:
+    if: ${{ github.event.schedule == '25 9 * * 1-5' || inputs.mode == 'jobB' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore state from bot-state branch
+        run: |
+          git fetch origin bot-state || echo "no bot-state branch yet"
+          git checkout origin/bot-state -- state.json || echo "no state.json yet"
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11', cache: pip }
+      - name: Cache HF models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-kronos-finbert-v1
+      - name: Install deps + Kronos
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          git clone --depth 1 https://github.com/shiyu-coder/Kronos || true
+      - name: Download HF models (safetensors only)
+        env:
+          HF_HUB_DISABLE_SYMLINKS_WARNING: '1'
+        run: |
+          python -c "from huggingface_hub import snapshot_download; [snapshot_download(r, ignore_patterns=['*.h5','*.msgpack','pytorch_model.bin']) for r in ['NeoQuasar/Kronos-small','NeoQuasar/Kronos-Tokenizer-base','NeoQuasar/Kronos-mini','ProsusAI/finbert']]"
+      - name: Run Job B
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_NIM_KEY: ${{ secrets.NVIDIA_NIM_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CALLMEBOT_KEY: ${{ secrets.CALLMEBOT_KEY }}
+          PHONE: ${{ secrets.PHONE }}
+          STATE_BRANCH_MODE: '1'
+        run: python main.py --mode jobB
+      - name: Commit state back
+        if: always()
+        run: |
+          git config user.name "nse-paper-bot"; git config user.email "bot@localhost"
+          git checkout -B bot-state
+          git add state.json || true
+          git commit -m "state update eod" || echo "nothing to commit"
+          for i in 1 2 3; do git pull --rebase origin bot-state || true; git push origin bot-state && break; sleep 5; done
+  watchdog:
+    if: ${{ github.event.schedule == '0 4 * * 1-5' || inputs.mode == 'watchdog' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore state from bot-state branch
+        run: |
+          git fetch origin bot-state || echo "no bot-state branch yet"
+          git checkout origin/bot-state -- state.json || echo "no state.json yet"
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11', cache: pip }
+      - name: Install minimal deps
+        run: pip install pandas numpy requests
+      - name: Watchdog check
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CALLMEBOT_KEY: ${{ secrets.CALLMEBOT_KEY }}
+          PHONE: ${{ secrets.PHONE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py --mode watchdog
+      - name: Re-dispatch Job A if heartbeat missing
+        if: failure()
+        env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        run: gh workflow run trade.yml -f mode=jobA || true

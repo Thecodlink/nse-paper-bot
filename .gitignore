@@ -1,0 +1,9 @@
+__pycache__/
+.venv/
+*.pyc
+journal.db
+state.json.tmp
+models/
+Kronos/
+.cache/
+*.log

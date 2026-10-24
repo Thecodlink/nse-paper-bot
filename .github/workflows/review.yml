@@ -1,0 +1,36 @@
+name: weekly-review
+on:
+  schedule:
+    - cron: '30 10 * * 5'   # Friday 16:00 IST
+  workflow_dispatch:
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Restore state (journal) from bot-state branch
+        run: |
+          git fetch origin bot-state || echo "no bot-state branch yet"
+          git show origin/bot-state:journal.db > journal.db 2>/dev/null || echo "no journal yet"
+          git show origin/bot-state:state.json > state.json 2>/dev/null || echo "no state yet"
+      - name: Install minimal deps
+        run: pip install -r requirements.txt || pip install pandas numpy
+      - name: Run weekly review
+        run: python3 weekly_review.py
+      - name: Commit review back to main
+        run: |
+          git config user.name "nse-paper-bot"
+          git config user.email "bot@localhost"
+          git add knowledge/review_*.md knowledge/trader_playbook.md
+          git diff --cached --quiet && echo "no review changes" && exit 0
+          git commit -m "weekly review $(date -u +%F)"
+          for i in 1 2 3; do git pull --rebase origin main && git push && break || sleep 5; done

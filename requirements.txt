@@ -1,0 +1,25 @@
+yfinance
+curl_cffi
+# pandas: tested at 3.1.0 in the Oct 24 stack test. yfinance emits pandas-4
+# deprecation warnings under 3.x, so pin >=3,<4 (do not let pandas 4 in yet).
+pandas==3.1.0  # tested; constraint: pandas>=3,<4
+numpy
+pandas-ta-classic
+# torch: install CPU wheel in workflow: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch
+transformers==5.20.2  # tested in stack test (FinBERT load+score OK)
+einops  # required by Kronos (was missing from the original spec list)
+feedparser
+groq
+google-genai
+openai
+streamlit
+plotly
+apscheduler
+# jugaad-data: pip package (import normally); a git clone is only a fallback
+# and is not importable until pip-installed or placed on PYTHONPATH.
+jugaad-data
+nsepython
+huggingface_hub
+requests
+# Kronos: installed via git clone https://github.com/shiyu-coder/Kronos in workflow (not pip)
