@@ -1,3 +1,11 @@
 # Dev-only dependencies (NOT installed in GitHub Actions runtime).
 pytest>=8
 ruff>=0.6
+# Backtest stack (Phase 1): backtest.py runs from an env with these -
+# locally the nse-stack-test venv (all 40 tests pass there), Kaggle
+# notebooks for full sweeps. vectorbt needs a coherent numba/llvmlite
+# pair; a polluted site-packages numba cache breaks it.
+duckdb
+pyarrow
+vectorbt>=1.2
+quantstats
