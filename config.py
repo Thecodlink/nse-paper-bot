@@ -1,5 +1,6 @@
 """Config for NSE paper-trading bot. Paper/research only. No broker, no real orders."""
 import datetime as dt
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -15,11 +16,27 @@ def today_ist():
 
 CAPITAL = 5000.0
 MAX_POSITIONS = 2
-MAX_CAPITAL_PCT = 0.45
 SL_ATR = 1.5
 TP_ATR = 2.5
 TRAIL_ATR = 1.0
-MIS_LEVERAGE = 5
+
+# --- Trading mode (Phase 0 rebuild, Nov 2026) ---
+# "swing" (default): delivery, daily bars, no leverage, Rs 0-brokerage
+# cost model. Intraday equity at Rs 5,000 with a Rs 20/order broker is
+# structurally negative after costs (see knowledge/cost_audit.md).
+# "intraday" (legacy, preserved behind this flag): MIS intraday,
+# 5x leverage, Rs 20/order cost stack.
+MODE = "swing"
+# Risk-based sizing (risk.position_size): fraction of EQUITY risked
+# per trade, where risk = qty x |entry - stop|.
+RISK_PER_TRADE = 0.0075
+# Leverage cap by mode. Swing = 1.0 (cash only, delivery).
+# Intraday = 5.0 (MIS). This replaces the old MIS_LEVERAGE constant,
+# which was dead code: min(0.45 x cash, 5 x cash) was always 0.45 x cash.
+MAX_LEVERAGE = 1.0 if MODE == "swing" else 5.0
+# Cost-ratio guard: warn (Telegram) when a trade's round-trip cost
+# exceeds this fraction of its take-profit distance.
+COST_TARGET_WARN_PCT = 0.25
 DATA_DELAY_MINUTES = 15
 LOOP_SECONDS = 300
 STALE_DATA_MINUTES = 30
@@ -56,6 +73,15 @@ MIN_ATR_PCT = 0.01
 
 SLIPPAGE_PCT = 0.001  # 0.1%
 BROKERAGE_PER_ORDER = 20.0
+# Swing / delivery cost model (Phase 0): Rs 0 brokerage brokers exist
+# (e.g. Shoonya/m.Stock class); delivery STT is 0.1% on BOTH sides and
+# a DP charge applies per scrip on sell. ZERO_BROKERAGE switches
+# paper_broker.cost_breakdown to this model. Default ON in swing mode,
+# OFF in intraday mode (which keeps the Rs 20 stack above).
+ZERO_BROKERAGE = (MODE == "swing")
+BROKERAGE_PER_ORDER_SWING = 0.0
+DP_CHARGE_PER_SCRIP = 12.0
+STT_DELIVERY_PCT = 0.001
 STT_SELL_PCT = 0.00025
 EXCHANGE_TXN_PCT = 0.0000325
 GST_PCT = 0.18
