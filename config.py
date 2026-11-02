@@ -15,7 +15,7 @@ def today_ist():
     return now_ist().date()
 
 CAPITAL = 5000.0
-MAX_POSITIONS = 2
+MAX_POSITIONS = 3
 SL_ATR = 1.5
 TP_ATR = 2.5
 TRAIL_ATR = 1.0
@@ -29,7 +29,22 @@ TRAIL_ATR = 1.0
 MODE = "swing"
 # Risk-based sizing (risk.position_size): fraction of EQUITY risked
 # per trade, where risk = qty x |entry - stop|.
-RISK_PER_TRADE = 0.0075
+# 0.015 (raised from 0.0075 by the Nov 2 Phase 1 amendment): the flat
+# Rs 12 DP charge is ~85% of a small position's round-trip cost; at
+# 0.0075 the risk-sized position (~Rs 1,000) pays 1.42% round-trip,
+# at 0.015 (~Rs 2,000) ~0.82% - cost/TP falls inside the 25% band
+# with TP_ATR untouched. Phase 1 sweeps {0.005, 0.01, 0.015, 0.02}.
+RISK_PER_TRADE = 0.015
+# Granularity floor: if risk sizing rounds qty to 0 but ONE share's
+# risk (the SL distance) is within this multiple of the risk budget,
+# take 1 share anyway - otherwise every high-price / high-ATR name in
+# the Rs 100-1500 universe is silently unsizable.
+QTY_FLOOR_MAX_OVERRUN = 2.0
+# Swing positions carry overnight: no 15:15 forced square-off.
+# manage_exits skips the "close" trigger, Job B becomes a report job,
+# and eod_snapshot() writes closing marks (gap_at_open is logged per
+# position next session so Phase 4 can price overnight gap risk).
+CARRY_OVERNIGHT = (MODE == "swing")
 # Leverage cap by mode. Swing = 1.0 (cash only, delivery).
 # Intraday = 5.0 (MIS). This replaces the old MIS_LEVERAGE constant,
 # which was dead code: min(0.45 x cash, 5 x cash) was always 0.45 x cash.

@@ -12,8 +12,17 @@ def test_swing_leverage_and_brokerage_flags():
 
 
 def test_risk_constants():
-    assert config.RISK_PER_TRADE == 0.0075
+    # 0.015 per the Nov 2 Phase 1 amendment (was 0.0075 in Phase 0):
+    # the flat Rs 12 DP charge needs a larger position to dilute.
+    assert config.RISK_PER_TRADE == 0.015
     assert config.COST_TARGET_WARN_PCT == 0.25
+    assert config.QTY_FLOOR_MAX_OVERRUN == 2.0
+
+
+def test_positions_and_carry():
+    assert config.MAX_POSITIONS == 3
+    # Swing mode carries overnight; intraday would not.
+    assert config.CARRY_OVERNIGHT is True
 
 
 def test_swing_cost_constants():

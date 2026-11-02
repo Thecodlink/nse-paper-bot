@@ -85,6 +85,30 @@ Reference points:
 - Tests: `tests/` (24 tests, pytest), ruff in `requirements-dev.txt`;
   pytest green, ruff clean on all Phase-0-touched files.
 
+## Amendment (Nov 2, 2026, Phase 1 greenlight) — supersedes the swing row above
+
+The reviewer verified this audit's arithmetic, then amended the
+sizing (not the strategy): **RISK_PER_TRADE 0.0075 → 0.015** and
+**MAX_POSITIONS 2 → 3**, because the Rs 12 DP charge is flat per
+scrip and only dilutes with position size. Recomputed with the code
+at the new defaults (median daily ATR, entry Rs 500):
+
+| Scenario | Qty | Notional | RT cost | RT % | TP distance | Cost % of TP | Break-even WR |
+|---|---|---|---|---|---|---|---|
+| Swing, amended defaults | 4 | Rs 2,000 | Rs 16.33 | 0.82% | 5.34% | **15.3% — inside the 25% band** | **47.1%** |
+
+Also amended the same evening:
+- **CARRY_OVERNIGHT = True** (swing): no 15:15 forced square-off —
+  the Phase 0 swing numbers assumed a multi-session hold that the
+  intraday square-off would have made impossible. Job B is now a
+  report job in swing mode; `eod_snapshot()` writes closing marks and
+  `gap_at_open` is logged per position next session (Phase 4 prices
+  the gap risk; today it is only measured).
+- **1-share qty floor** with a bounded overrun (one share allowed when
+  its risk ≤ 2× the risk budget and margin allows it): without it,
+  qty rounded to 0 and silently excluded the top of the Rs 100–1500
+  universe.
+
 ## Known scope limits (later phases, not hidden)
 
 - Live scheduling/gates are still the intraday ones (Job A/B windows,

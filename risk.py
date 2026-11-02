@@ -93,7 +93,15 @@ def position_size(equity, entry, stop, deployed=0.0, multiplier=None):
     qty_risk = int(risk_amount // sl_distance)
     margin_room = equity * float(config.MAX_LEVERAGE) - float(deployed)
     qty_margin = int(margin_room // entry) if margin_room > 0 else 0
-    return max(0, min(qty_risk, qty_margin))
+    qty = max(0, min(qty_risk, qty_margin))
+    if qty == 0 and qty_margin >= 1 and sl_distance <= config.QTY_FLOOR_MAX_OVERRUN * risk_amount:
+        # Granularity floor: one share, with the risk overrun bounded
+        # at QTY_FLOOR_MAX_OVERRUN x the risk budget. Without this,
+        # qty floors to 0 and silently kills the top of the universe
+        # (e.g. risk Rs 37.50 vs a Rs 44.86 stop distance on a
+        # Rs 1,400 name -> 0 shares, no log, no trade, ever).
+        qty = 1
+    return qty
 
 
 def levels(entry, atr):
