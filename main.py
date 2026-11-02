@@ -1,8 +1,20 @@
 """Orchestrator. Paper only, Yahoo data only, no real orders.
 Modes: jobA | jobB | watchdog | once | test-notify
 Internal loop 300s. Decision rule: BUY only if kronos>0.58 AND 40<RSI<70 AND price>EMA21 AND finbert>=0 AND brain BUY AND risk passes."""
-import argparse, time, logging, sys, os, subprocess
-import config, state as state_mod, notify, risk, paper_broker, journal
+import argparse
+import logging
+import os
+import subprocess
+import sys
+import time
+
+import config
+import journal
+import notify
+import paper_broker
+import risk
+import state as state_mod
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log=logging.getLogger("main")
 
@@ -31,7 +43,7 @@ def manage_exits(st, intraday):
         if reason or is_trail_exit:
             reason=reason or "trail"
             entry_cost=pos["entry"]*pos["qty"]+pos.get("costs_buy",0)
-            trade,cb=paper_broker.sell(st,pos,price,reason,config.now_ist())
+            trade,_cb=paper_broker.sell(st,pos,price,reason,config.now_ist())
             pct=(trade["net_pnl"]/entry_cost*100) if entry_cost else 0
             _notify(notify.sell_confirmed,pos["symbol"],pos["qty"],_ist_time_str(),trade["exit"],trade["gross"],trade["costs"],trade["net_pnl"],pct,reason)
 
@@ -65,7 +77,9 @@ def run_cycle(st):
     # decisions
     if config.no_new_trades() or len(st.get("positions",[]))>=config.MAX_POSITIONS:
         state_mod.save(st); return st
-    import sentiment, kronos_forecast, brain
+    import brain
+    import kronos_forecast
+    import sentiment
     # Cheap filters FIRST (stack-test design rule): Kronos costs ~58s/symbol on
     # 2 CPU, so it runs ONLY on the final KRONOS_MAX_CANDIDATES (default 5)
     # candidates that pass price/EMA/RSI/sentiment -- never on the whole list.
@@ -91,9 +105,16 @@ def run_cycle(st):
         if decision["action"]!="BUY" or decision.get("veto_flag"): continue
         ok,why,qty,sl,tp=risk.check(st, sym, vals["Close"], vals.get("ATR14") or 0)
         if not ok: log.info("%s risk gate: %s", sym, why); continue
-        pos,cb=paper_broker.buy(st, sym, qty, vals["Close"], sl, tp,
+        pos,_cb=paper_broker.buy(st, sym, qty, vals["Close"], sl, tp,
             f"kronos {kp:.2f}, RSI {vals.get('RSI14'):.1f}, price>EMA21, sentiment {sent:.2f}, brain: {decision['reasoning'][:200]}", config.now_ist())
         _notify(notify.buy_confirmed,sym, qty, _ist_time_str(), pos["entry"], qty*pos["entry"], sl, tp, pos["reason"], st["cash"])
+        # Cost-ratio guard (Phase 0.4): round-trip cost vs TP distance.
+        pct_of_target = pos.get("cost_pct_of_target")
+        if pct_of_target is not None and pct_of_target > config.COST_TARGET_WARN_PCT:
+            log.warning("%s cost_pct_of_target %.2f exceeds %.2f - notifying", sym, pct_of_target, config.COST_TARGET_WARN_PCT)
+            _notify(notify.send, f"COST WARNING\nStock: {sym} | cost is {pct_of_target * 100:.0f}% of the take-profit distance "
+                                 f"(limit {config.COST_TARGET_WARN_PCT * 100:.0f}%). Est round-trip cost Rs {pos.get('est_round_trip_cost', 0):.2f} "
+                                 f"on qty {qty}. This trade's costs eat its target - review before trusting it.")
     st.setdefault("equity_curve",[]).append({"ts":config.now_ist().isoformat(),"cash":st["cash"],"positions":len(st["positions"])})
     state_mod.save(st); return st
 
@@ -129,7 +150,7 @@ def watchdog():
         _notify(notify.send,f"WATCHDOG ALERT\nNo heartbeat for {today} in nse-paper-bot state.json. Re-dispatching Job A if possible.")
         token=os.environ.get("GITHUB_TOKEN")
         if token:
-            try: subprocess.run(["gh","workflow","run","trade.yml","-f","mode=jobA"], capture_output=True, timeout=30); log.info("watchdog dispatched jobA via gh")
+            try: subprocess.run(["gh","workflow","run","trade.yml","-f","mode=jobA"], capture_output=True, timeout=30, check=False); log.info("watchdog dispatched jobA via gh")
             except Exception as e: log.warning("watchdog dispatch failed: %s", e)
         else: log.warning("watchdog: no GITHUB_TOKEN, alert only")
         return 1
@@ -141,7 +162,7 @@ def loop_until(exit_time, mode):
         now=config.now_ist()
         if now.time()>=exit_time: break
         try: st=run_cycle(st)
-        except Exception as e: log.exception("cycle crashed, continuing: %s", e)
+        except Exception: log.exception("cycle crashed, continuing")
         if mode=="once": break
         time.sleep(config.LOOP_SECONDS)
     if mode=="jobB": square_off_and_eod(st)
@@ -158,6 +179,6 @@ def main():
     elif a.mode=="once":
         st=state_mod.load()
         try: run_cycle(st)
-        except Exception as e: log.exception("once cycle error (non-fatal): %s", e)
+        except Exception: log.exception("once cycle error (non-fatal)")
     return 0
 if __name__=="__main__": sys.exit(main())
