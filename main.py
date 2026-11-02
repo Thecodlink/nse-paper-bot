@@ -35,7 +35,7 @@ def manage_exits(st, intraday):
         if df is None or len(df)==0: continue
         price=float(df["Close"].iloc[-1]); atr=float(df["ATR14"].iloc[-1]) if "ATR14" in df else 0
         reason=None
-        if config.SQUARE_OFF_FROM <= now.time(): reason="close"
+        if config.SQUARE_OFF_FROM <= now.time() and not getattr(config,"CARRY_OVERNIGHT",False): reason="close"
         elif price<=pos["stop"]: reason="stop"
         elif price>=pos["target"]: reason="target"
         if atr: pos["stop"]=risk.trail_stop(pos, price, atr)
@@ -46,6 +46,66 @@ def manage_exits(st, intraday):
             trade,_cb=paper_broker.sell(st,pos,price,reason,config.now_ist())
             pct=(trade["net_pnl"]/entry_cost*100) if entry_cost else 0
             _notify(notify.sell_confirmed,pos["symbol"],pos["qty"],_ist_time_str(),trade["exit"],trade["gross"],trade["costs"],trade["net_pnl"],pct,reason)
+
+def eod_snapshot(st, frames=None):
+    """Swing mode end-of-day marks for carried positions.
+
+    Writes st["eod_snapshot"] = {date, positions: [{symbol, qty, entry,
+    mark, unrealised_pnl}], equity_est} and stamps each position's
+    last_mark / mark_date, which record_gaps() compares against the
+    next session's open. Marks come from the latest Close in the
+    provided frames; a position with no frame is marked at entry
+    (unrealised 0) and flagged mark_source="entry_fallback".
+    Never raises (hard constraint 4)."""
+    try:
+        frames = frames or {}
+        rows=[]; equity=float(st.get("cash",0))
+        for pos in st.get("positions",[]):
+            mark=None; source="frame_close"
+            df=frames.get(pos["symbol"])
+            if df is not None and len(df):
+                try: mark=float(df["Close"].iloc[-1])
+                except Exception: mark=None
+            if mark is None:
+                mark=float(pos["entry"]); source="entry_fallback"
+            unreal=round((mark-float(pos["entry"]))*int(pos["qty"]) - float(pos.get("costs_buy",0)),2)
+            pos["last_mark"]=mark; pos["mark_date"]=str(config.today_ist()); pos["mark_source"]=source
+            equity += mark*int(pos["qty"])
+            rows.append({"symbol":pos["symbol"],"qty":pos["qty"],"entry":pos["entry"],"mark":mark,
+                         "unrealised_pnl":unreal,"mark_source":source})
+        snap={"date":str(config.today_ist()),"positions":rows,"equity_est":round(equity,2)}
+        st["eod_snapshot"]=snap
+        log.info("EOD snapshot: %d carried position(s), equity est Rs %.2f", len(rows), equity)
+        return snap
+    except Exception as e:
+        log.warning("eod_snapshot failed (ignored): %s", e); return None
+
+def record_gaps(st, frames):
+    """Overnight gap logging (Phase 1 amendment): for each carried
+    position with a previous-session mark, compare today's first bar
+    Open against that mark and store pos["gap_at_open"]. Phase 4 will
+    price this risk; for now it is measured, not modelled.
+    Never raises."""
+    try:
+        today=str(config.today_ist())
+        for pos in st.get("positions",[]):
+            if pos.get("mark_date") in (None, today) or pos.get("gap_recorded_date")==today: continue
+            df=(frames or {}).get(pos["symbol"])
+            if df is None or len(df)==0: continue
+            try:
+                idx=df.index
+                todays=[i for i,v in enumerate(idx) if str(v)[:10]==today]
+                open_px=float(df["Open"].iloc[todays[0]]) if todays else float(df["Open"].iloc[0])
+                prev=float(pos["last_mark"])
+                if prev<=0: continue
+                gap_pct=round((open_px-prev)/prev*100,3)
+                pos["gap_at_open"]={"date":today,"pct":gap_pct,"prev_mark":prev,"open":open_px}
+                pos["gap_recorded_date"]=today
+                log.info("gap_at_open %s: %+.3f%% (prev mark %.2f -> open %.2f)", pos["symbol"], gap_pct, prev, open_px)
+            except Exception as e:
+                log.debug("gap record for %s skipped: %s", pos.get("symbol"), e); continue
+    except Exception as e:
+        log.warning("record_gaps failed (ignored): %s", e)
 
 def run_cycle(st):
     state_mod.heartbeat(st)
@@ -73,6 +133,7 @@ def run_cycle(st):
         if stale:
             log.warning("Data stale for %s age=%s min (>30) - skip cycle", sym, age); state_mod.save(st); return st
         break
+    record_gaps(st, intraday)
     manage_exits(st, intraday)
     # decisions
     if config.no_new_trades() or len(st.get("positions",[]))>=config.MAX_POSITIONS:
@@ -125,12 +186,24 @@ def square_off_and_eod(st):
         from indicators import add_indicators
         intra={k:add_indicators(v) for k,v in (intra or {}).items()}
     except Exception: intra={}
-    manage_exits(st, intra)  # at/after 15:15 this forces 'close'
-    # force any remaining closed at last known entry (paper, logged)
-    for pos in list(st.get("positions",[])):
-        log.warning("Force square-off %s at entry proxy (no live frame)", pos["symbol"])
-        paper_broker.sell(st, pos, pos["entry"], "close", config.now_ist())
-    trades_today=[t for t in st.get("trades",[]) if str(config.today_ist()) in str(t.get("time",""))] or st.get("trades",[])
+    manage_exits(st, intra)  # intraday mode: at/after 15:15 this forces 'close'
+    carry = getattr(config,"CARRY_OVERNIGHT",False)
+    if carry:
+        # Swing mode: NO forced square-off. Positions carry overnight;
+        # Job B is a report job here. Snapshot closing marks for the
+        # gap_at_open comparison next session.
+        eod_snapshot(st, intra)
+    else:
+        # force any remaining closed at last known entry (paper, logged)
+        for pos in list(st.get("positions",[])):
+            log.warning("Force square-off %s at entry proxy (no live frame)", pos["symbol"])
+            paper_broker.sell(st, pos, pos["entry"], "close", config.now_ist())
+    if carry:
+        # Strictly today's closed trades - the legacy fallback to ALL
+        # trades would corrupt daily_pnl on a no-exit day.
+        trades_today=[t for t in st.get("trades",[]) if str(config.today_ist()) in str(t.get("time",""))]
+    else:
+        trades_today=[t for t in st.get("trades",[]) if str(config.today_ist()) in str(t.get("time",""))] or st.get("trades",[])
     wins=sum(1 for t in trades_today if t["net_pnl"]>0); losses=sum(1 for t in trades_today if t["net_pnl"]<=0)
     costs=sum(t.get("costs",0) for t in trades_today); pnl=st["cash"]-st.get("starting_cash",config.CAPITAL)
     pct=pnl/st.get("starting_cash",config.CAPITAL)*100
@@ -140,8 +213,10 @@ def square_off_and_eod(st):
         streak,mult=risk.update_day_close(st, str(config.today_ist()), day_pnl)
         log.info("day close: pnl %.2f, consecutive losing days=%d, size_multiplier=%.1f", day_pnl, streak, mult)
     except Exception as e: log.warning("update_day_close failed (ignored): %s", e)
+    notes=("Paper session complete. Data: Yahoo Finance (~15m delay). No real orders."
+           + (f" Swing mode: {len(st.get('positions',[]))} position(s) carried overnight." if carry else ""))
     _notify(notify.market_closed,str(config.today_ist()), st.get("starting_cash",5000), st["cash"], pnl, pct, len(trades_today), wins, losses, costs,
-                           "Paper session complete. Data: Yahoo Finance (~15m delay). No real orders.")
+                           notes)
     state_mod.heartbeat(st); state_mod.save(st); return st
 
 def watchdog():
