@@ -17,7 +17,7 @@ permissions:
   actions: write
 jobs:
   jobA:
-    if: ${{ github.event.schedule == '20 3 * * 1-5' || inputs.mode == 'jobA' || inputs.mode == 'once' || inputs.mode == 'test-notify' }}
+    if: ${{ github.event.schedule == '20 3 * * 1-5' || inputs.mode == 'jobA' || inputs.mode == 'test-notify' }}
     runs-on: ubuntu-latest
     timeout-minutes: 355
     steps:
