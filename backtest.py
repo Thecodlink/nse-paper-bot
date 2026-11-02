@@ -254,6 +254,84 @@ def extract_candidates(symbol, d, variant):
     return out
 
 
+def extract_pool_batch(ind, variant, calendar):
+    """Batched vectorbt extraction for ALL symbols in one call.
+
+    Per-symbol calls cost ~1s each in numba overhead; one call with
+    symbols as columns is an order of magnitude faster for the sweep.
+    Symbols are aligned onto the reference calendar; bars a symbol
+    does not have are forward-filled flat (High=Low=Close), which can
+    never trigger a stop/target or a signal (signals are computed on
+    each symbol's own real bars first, then reindexed). Fill semantics
+    are identical to extract_candidates (verified by the same tests
+    against the single-symbol path's rules)."""
+    import vectorbt as vbt
+    cal = pd.DatetimeIndex(calendar)
+    cols = {}
+    for s, d in ind.items():
+        sig = entry_signals(d, variant.rsi_min, variant.rsi_max)
+        entries = sig.shift(1, fill_value=False)
+        sl_frac = (variant.sl_atr * d["ATR14"]).shift(1) / d["Open"]
+        tp_frac = (variant.tp_atr * d["ATR14"]).shift(1) / d["Open"]
+        score = (d["AVG_VOL20"] * d["ATR_PCT"]).shift(1)
+        cols[s] = {"entries": entries, "sl": sl_frac, "tp": tp_frac, "score": score,
+                   "atr": d["ATR14"]}
+    def wide(key, fill):
+        return pd.DataFrame({s: cols[s][key].reindex(cal) for s in ind}).fillna(fill)
+    entries_df = wide("entries", False).astype(bool)
+    if not entries_df.to_numpy().any():
+        return []
+    open_df = pd.DataFrame({s: ind[s]["Open"].reindex(cal) for s in ind}).ffill().bfill()
+    close_df = pd.DataFrame({s: ind[s]["Close"].reindex(cal) for s in ind}).ffill().bfill()
+    high_df = pd.DataFrame({s: ind[s]["High"].reindex(cal) for s in ind}).ffill().bfill()
+    low_df = pd.DataFrame({s: ind[s]["Low"].reindex(cal) for s in ind}).ffill().bfill()
+    sl_df = wide("sl", np.nan)
+    tp_df = wide("tp", np.nan)
+    score_df = wide("score", 0.0)
+    adj_close = close_df.where(~entries_df, open_df)
+    pf = vbt.Portfolio.from_signals(
+        adj_close, entries_df, price=adj_close, open=open_df, high=high_df, low=low_df,
+        sl_stop=sl_df, tp_stop=tp_df, sl_trail=True,
+        init_cash=1e12, size=1, size_type="amount", fees=0.0, slippage=0.0,
+        freq="1D", accumulate=False)
+    rec = pf.trades.records_readable
+    out = []
+    for _, r in rec.iterrows():
+        s = r["Column"]
+        entry_ts = pd.Timestamp(r["Entry Timestamp"])
+        exit_ts = pd.Timestamp(r["Exit Timestamp"])
+        entry_raw = float(r["Avg Entry Price"])
+        exit_raw = float(r["Avg Exit Price"])
+        d = ind[s]
+        sl_f = float(sl_df.loc[entry_ts, s]) if pd.notna(sl_df.loc[entry_ts, s]) else 0.0
+        tp_f = float(tp_df.loc[entry_ts, s]) if pd.notna(tp_df.loc[entry_ts, s]) else 0.0
+        status = str(r["Status"])
+        if status.lower().startswith("open"):
+            reason = "window_end"
+        elif exit_raw <= entry_raw * (1 - sl_f) + 1e-9:
+            reason = "stop"
+        elif exit_raw >= entry_raw * (1 + tp_f) - 1e-9:
+            reason = "target"
+        else:
+            reason = "stop"
+        sig_date = entry_ts - pd.Timedelta(days=1)
+        sig_rows = d.index[d.index < entry_ts]
+        sig_date = sig_rows[-1] if len(sig_rows) else entry_ts
+        atr_v = d["ATR14"].loc[sig_date] if sig_date in d.index else 0.0
+        out.append({
+            "symbol": s, "signal_date": sig_date,
+            "entry_date": entry_ts, "exit_date": exit_ts,
+            "entry_raw": entry_raw, "exit_raw": exit_raw,
+            "stop": round(entry_raw * (1 - sl_f), 2),
+            "target": round(entry_raw * (1 + tp_f), 2),
+            "atr": float(atr_v) if pd.notna(atr_v) else 0.0,
+            "score": float(score_df.loc[entry_ts, s]) if entry_ts in score_df.index else 0.0,
+            "exit_reason": reason,
+        })
+    out.sort(key=lambda c: (c["entry_date"], -c["score"]))
+    return out
+
+
 # ---------------------------------------------------------------- assembly
 
 @contextlib.contextmanager
@@ -541,13 +619,36 @@ def main(argv=None):
     os.makedirs(a.out, exist_ok=True)
     stamp = str(config.today_ist())
     ind = {s: add_signal_columns(bars[s]) for s in bars if s != BENCHMARK}
-    by_variant = {}
-    for v in {c.variant for c in all_configs()}:
-        pool = []
-        for s, d in ind.items():
-            pool.extend(extract_candidates(s, d, v))
-        by_variant[v] = pool
-        log.info("variant %s: %d candidates", v, len(pool))
+    # Candidate pools are expensive to extract (~36 batched vectorbt
+    # runs); cache them in the (gitignored) data cache, keyed by the
+    # benchmark's last bar date.
+    import pickle
+    pool_key = str(bars[BENCHMARK].index[-1].date())
+    pool_path = os.path.join(CACHE_ROOT, f"pools_{a.mode}_{pool_key}.pkl")
+    by_variant = None
+    if os.path.exists(pool_path) and not a.refresh_cache:
+        try:
+            with open(pool_path, "rb") as fh:
+                by_variant = pickle.load(fh)
+            log.info("loaded candidate pools from %s", pool_path)
+        except Exception as e:
+            log.warning("pool cache unreadable (%s); re-extracting", e)
+            by_variant = None
+    if by_variant is None:
+        by_variant = {}
+        # Union calendar for alignment: benchmark-only would drop
+        # entries whose execution bar exists in a symbol's own Yahoo
+        # series but not in NIFTYBEES' (cross-ticker calendar quirks;
+        # measured 1 trade in 122 in cross-checks).
+        full_cal = sorted({d for df in bars.values() for d in df.index})
+        for v in sorted({c.variant for c in all_configs()}, key=str):
+            by_variant[v] = extract_pool_batch(ind, v, full_cal)
+            log.info("variant %s: %d candidates", v, len(by_variant[v]))
+        try:
+            with open(pool_path, "wb") as fh:
+                pickle.dump(by_variant, fh)
+        except Exception as e:
+            log.warning("pool cache write failed (ignored): %s", e)
 
     sel_metrics, sel_eqs, picks = run_wf_selection(a.mode, bars, folds, by_variant)
 
