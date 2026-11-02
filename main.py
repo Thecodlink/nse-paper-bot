@@ -33,6 +33,16 @@ def manage_exits(st, intraday):
     for pos in list(st.get("positions",[])):
         df=(intraday or {}).get(pos["symbol"])
         if df is None or len(df)==0: continue
+        # Harness diagnostics (Phase 1.5): running MAE/MFE per position,
+        # from bars on/after the entry date only. Logging only - no
+        # effect on exits. Answers "was it stopped just before the move?"
+        try:
+            ent_date=str(pos.get("time",""))[:10]
+            f=df[df.index.strftime("%Y-%m-%d")>=ent_date] if ent_date else df
+            if len(f) and pos.get("entry"):
+                pos["mfe_pct"]=max(float(pos.get("mfe_pct") or 0.0), round((float(f["High"].max())/float(pos["entry"])-1)*100,3))
+                pos["mae_pct"]=min(float(pos.get("mae_pct") or 0.0), round((float(f["Low"].min())/float(pos["entry"])-1)*100,3))
+        except Exception as e: log.debug("MAE/MFE update failed for %s (ignored): %s", pos.get("symbol"), e)
         price=float(df["Close"].iloc[-1]); atr=float(df["ATR14"].iloc[-1]) if "ATR14" in df else 0
         reason=None
         if config.SQUARE_OFF_FROM <= now.time() and not getattr(config,"CARRY_OVERNIGHT",False): reason="close"

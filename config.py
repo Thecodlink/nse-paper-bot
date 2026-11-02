@@ -45,6 +45,13 @@ QTY_FLOOR_MAX_OVERRUN = 2.0
 # and eod_snapshot() writes closing marks (gap_at_open is logged per
 # position next session so Phase 4 can price overnight gap risk).
 CARRY_OVERNIGHT = (MODE == "swing")
+# Live-period label written to every journal trade row. Phase 1.5
+# (Nov 2, 2026): the Phase 1 backtest found the rule core has no
+# cost-survivable edge, so the live bot runs as a HARNESS ONLY - its
+# trades are labelled "edge_invalid" and live P&L must not be judged
+# as strategy evidence. Change this when a hypothesis that passed
+# the Phase 1.5 gate goes live.
+LIVE_LABEL = "edge_invalid"
 # Leverage cap by mode. Swing = 1.0 (cash only, delivery).
 # Intraday = 5.0 (MIS). This replaces the old MIS_LEVERAGE constant,
 # which was dead code: min(0.45 x cash, 5 x cash) was always 0.45 x cash.

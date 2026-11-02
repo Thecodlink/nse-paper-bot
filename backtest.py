@@ -254,8 +254,12 @@ def extract_candidates(symbol, d, variant):
     return out
 
 
-def extract_pool_batch(ind, variant, calendar):
+def extract_pool_batch(ind, variant, calendar, extra_filter=None):
     """Batched vectorbt extraction for ALL symbols in one call.
+
+    extra_filter: optional callable(d) -> bool Series on the signal
+    bars of each symbol's indicator frame, ANDed with the base entry
+    signal (used by the Phase 1.5 d8 marginal-separation test).
 
     Per-symbol calls cost ~1s each in numba overhead; one call with
     symbols as columns is an order of magnitude faster for the sweep.
@@ -270,6 +274,8 @@ def extract_pool_batch(ind, variant, calendar):
     cols = {}
     for s, d in ind.items():
         sig = entry_signals(d, variant.rsi_min, variant.rsi_max)
+        if extra_filter is not None:
+            sig = sig & extra_filter(d).reindex(d.index).fillna(False)
         entries = sig.shift(1, fill_value=False)
         sl_frac = (variant.sl_atr * d["ATR14"]).shift(1) / d["Open"]
         tp_frac = (variant.tp_atr * d["ATR14"]).shift(1) / d["Open"]

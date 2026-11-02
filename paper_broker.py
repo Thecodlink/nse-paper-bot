@@ -76,7 +76,8 @@ def buy(state, symbol, qty, next_open, stop, target, reason, ts):
     pos = {"symbol": symbol, "qty": qty, "entry": price, "stop": stop, "target": target,
            "costs_buy": cb["total"], "time": str(ts), "reason": reason,
            "cost_model": cb["model"], "cost_pct_of_target": pct,
-           "est_round_trip_cost": round_trip_cost_estimate(qty, price, target, model=cb["model"])}
+           "est_round_trip_cost": round_trip_cost_estimate(qty, price, target, model=cb["model"]),
+           "mae_pct": 0.0, "mfe_pct": 0.0}
     state["positions"].append(pos)
     log.info("BUY %s qty %d @ %.2f costs %.2f cost_pct_of_target=%s (model=%s)",
              symbol, qty, price, cb["total"], pct, cb["model"])
@@ -94,7 +95,8 @@ def buy(state, symbol, qty, next_open, stop, target, reason, ts):
                         symbol, state["cash"], floor_cash, equity_est, float(config.MAX_LEVERAGE))
     except Exception as e:
         log.warning("cash floor check failed (ignored): %s", e)
-    journal.log_trade(str(ts), symbol, "BUY", qty, price, gross, cb["total"], cb, -total_cost, reason)
+    journal.log_trade(str(ts), symbol, "BUY", qty, price, gross, cb["total"], cb, -total_cost, reason,
+                      label=getattr(config, "LIVE_LABEL", None))
     return pos, cb
 
 
@@ -111,7 +113,11 @@ def sell(state, pos, next_open, reason, ts):
     trade = {"symbol": pos["symbol"], "qty": qty, "entry": pos["entry"], "exit": price, "gross": gross,
              "costs": round(cb["total"] + buy_cost, 2),
              "costs_sell": cb["total"], "net_pnl": round(pnl, 2), "reason": reason, "time": str(ts),
-             "cost_pct_of_target": pos.get("cost_pct_of_target")}
+             "cost_pct_of_target": pos.get("cost_pct_of_target"),
+             "mae_pct": pos.get("mae_pct"), "mfe_pct": pos.get("mfe_pct"),
+             "label": getattr(config, "LIVE_LABEL", None)}
     state.setdefault("trades", []).append(trade)
-    journal.log_trade(str(ts), pos["symbol"], "SELL", qty, price, gross, cb["total"], cb, round(pnl, 2), reason)
+    journal.log_trade(str(ts), pos["symbol"], "SELL", qty, price, gross, cb["total"], cb, round(pnl, 2), reason,
+                      label=getattr(config, "LIVE_LABEL", None),
+                      mae_pct=pos.get("mae_pct"), mfe_pct=pos.get("mfe_pct"))
     return trade, cb
